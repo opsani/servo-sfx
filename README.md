@@ -26,7 +26,7 @@ Whether or not the SignalFlow program uses any form of aggregation, this driver 
 
 A servo which uses this measure driver requires a SignalFx API token to exist either as the contents of the file /etc/optune-sfx-auth/api_key or as the value of the environment variable OPTUNE_SFX_API_KEY.
 
-The file method is suitable for use with Kubernetes secrets.  This file can be automatically created on a Kubernetes servo using a secret mounted as `/etc/optune-signalfx-auth`.  See the following example.
+The file method is suitable for use with Kubernetes secrets.  This file can be automatically created on a Kubernetes servo using a secret mounted as `/etc/optune-sfx-auth`.  See the following example.
 
 Create a secret in namespace `abc` using kubectl:
 ```
