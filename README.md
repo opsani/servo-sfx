@@ -1,7 +1,9 @@
 # servo-sfx
-Optune servo driver for SignalFx
+Optune servo measure driver for SignalFx
 
-Note: this driver requires `measure.py` base class from the Optune servo core. It can be copied or symlinked here as part of packaging
+Note: this driver requires `measure.py` base class from the Optune servo core. It can be copied or symlinked here as part of packaging.  A servo using this driver requires the following 3rd party Python3 packages:  `signalfx` (required by this driver) and `requests` (required by the servo core).  When building a servo image, install these packages using pip3, e.g.:  `pip3 install signalfx requests`
+
+## overview
 
 SignalFx metric queries are made using the SignalFlow API `execute` endpoint (<https://developers.signalfx.com/reference#signalflow-execute>).  The data for this query includes the SignalFlow program to execute to obtain time series data.  For example, the program:
 ```
@@ -20,7 +22,7 @@ Whether or not the SignalFlow program uses any form of aggregation, this driver 
 * space aggregation:  for a given time, aggregate all of the data values to produce a single value using one of these methods:  avg, max, min, sum (if there is just one time series pointlist, these are all the same)
 * time aggregation:  aggregate all of the space aggregates to produce a single value (e.g., perf metric) using one of these methods:  avg, max, min, sum
 
-# servo configuration
+## servo configuration
 
 A servo which uses this measure driver requires a SignalFx API token to exist either as the contents of the file /etc/optune-sfx-auth/api_key or as the value of the environment variable OPTUNE_SFX_API_KEY.
 
@@ -50,7 +52,7 @@ spec:
           readOnly: true               
 ```
 
-# driver configuration
+## driver configuration
 
 In addition to the standard `warmup` and `duration` configuration, the driver measurement control specification provides for configuring the SignalFlow program, and the method(s) for computing a single `perf` result, using the free-from `userdata` section of the operator override descriptor (e.g., an app-desc.yaml provided to the server).  For example:
 
