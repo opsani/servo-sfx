@@ -70,9 +70,11 @@ measurement:
       pre_cmd_async:  'ab -c 10 -rkl -t 1000 http://c4:8080/'
 ```
 
-* `warmup`:  period after adjustment when a measurement is not taken (sleep).  Default 0 seconds.
-* `duration`:  period of measurement.  Default 120 seconds.
-* `program`: a SignalFlow program (e.g. used to query time-series metrics).  Required. 
+* `warmup`:  period in seconds after adjustment when a measurement is not taken (sleep).  Default `0`.
+* `duration`:  period of measurement in seconds.  Default `120`.
+* `flow_program`: a SignalFlow program (e.g. used to query time-series metrics).  Required.
+* `flow_immediate`:  boolean indicating whether or not to adjust the measurement stop timestamp so the SignalFlow computation does not wait for future data to become available.  Default `False`.
+* `flow_resolution`:  the minimum desired data resolution, in milliseconds.  Default `None` (use the default minimum time resolution)
 * `time_aggr`:  aggregation method for space aggregate values (used to create a single `perf` metric).  One of avg|max|min|sum.  Default `avg`.
 * `space_aggr`:  aggregation method for all values at a given time.  One of avg|max|min|sum.  Default `avg`.
 * `pre_cmd_async`:  Bash shell command to execute prior to warmup.  This optional command may be a string or a list.  This command is executed asynchronously with stdout/stderr directed to /dev/null.  If the process is still running after measurement, it is terminated.  This command is suitable for generating load during measurement, typically for testing purposes, as in the example above.

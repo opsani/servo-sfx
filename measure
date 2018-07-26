@@ -22,6 +22,8 @@ DFLT_SPACE_AGGR      = 'avg'
 DFLT_STREAM_ENDPOINT = 'https://stream.signalfx.com'
 DFLT_METRIC_NAME     = 'perf'
 DFLT_METRIC_UNIT     = ''
+DFLT_FLOW_IMMEDIATE  = False
+DFLT_FLOW_RESOLUTION = None
 
 AGGR_OPERATORS       = ('avg', 'max', 'min', 'sum')
 API_KEY_FPATH        = '/etc/optune-sfx-auth/api_key'
@@ -69,10 +71,12 @@ class SignalFx(Measure):
             'Both warmup {} and duration {} must be non-negative'.format(warmup, duration)
         assert 'userdata' in control, 'Control configuration missing userdata'
         userdata = control['userdata']
-        assert 'program' in userdata, 'Program missing from control configuration userdata'
+        assert 'flow_program' in userdata, 'Control configuration userdata missing flow_program'
 
         # parse and valcheck:  userdata of control configuration
-        program         = userdata['program']
+        flow_program    = userdata['flow_program']
+        flow_immediate  = userdata.get('flow_immediate', DFLT_FLOW_IMMEDIATE)
+        flow_resolution = userdata.get('flow_resolution', DFLT_FLOW_RESOLUTION)
         time_aggr       = userdata.get('time_aggr', DFLT_TIME_AGGR)
         space_aggr      = userdata.get('space_aggr', DFLT_SPACE_AGGR)
         stream_endpoint = userdata.get('stream_endpoint', DFLT_STREAM_ENDPOINT)
@@ -86,10 +90,11 @@ class SignalFx(Measure):
         assert space_aggr in AGGR_OPERATORS, \
             'Unknown space_aggr {}'.format(space_aggr)
 
-        # query sfx:  verify program is valid
+        # query sfx:  verify signalflow program is valid
         self._init_sfx(stream_endpoint)
-        qval = self._query_sfx_metric(program, time_aggr, space_aggr, duration)
-        self.debug('Initial value for query {}:  {}'.format(program, qval))
+        qval = self._query_sfx_metric(flow_program, flow_immediate, flow_resolution,
+            time_aggr, space_aggr, duration)
+        self.debug('Initial value for query {}:  {}'.format(flow_program, qval))
 
         # execute pre_cmd_async, if any
         if pre_cmd_async is not None:
@@ -106,7 +111,8 @@ class SignalFx(Measure):
         time.sleep(self.t_sleep)
 
         # query sfx:  measure
-        qval = self._query_sfx_metric(program, time_aggr, space_aggr, duration)
+        qval = self._query_sfx_metric(flow_program, flow_immediate, flow_resolution,
+            time_aggr, space_aggr, duration)
 
         # execute post_cmd, if any
         if post_cmd is not None:
@@ -121,7 +127,7 @@ class SignalFx(Measure):
         metrics = {
             'perf': {
                 'value': qval,
-                'annotation': program,
+                'annotation': flow_program,
             }
         }
         annotations = {}
@@ -166,20 +172,18 @@ class SignalFx(Measure):
 
     # helper:  query sfx metrics over last duration seconds and return
     # value computed from aggregating in time and space
-    def _query_sfx_metric(self, program, time_aggr, space_aggr, duration):
+    def _query_sfx_metric(self, program, immediate, resolution, time_aggr,
+        space_aggr, duration):
 
         space_aggr_vals = []
         with self.sfx.signalflow(self.sfx_api_key) as flow:
 
             # execute SignalFlow program, obtaining a stream object:
-            # immediate=True  => adjust the stop timestamp so computation does
-            #                    not wait for future data to become available
-            # resolution=None => use default minimum time resolution
             now_ms = int(time.time()) * 1000
             start_ms = now_ms - (duration * 1000)
             try:
                 computation = flow.execute(program, start=start_ms, stop=now_ms,
-                    immediate=True, resolution=None)
+                    immediate=immediate, resolution=resolution)
             except Exception as e:
                 raise Exception(
                     'Failed to query SignalFx for program {}. Error: {}'.format(
