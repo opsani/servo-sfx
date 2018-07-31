@@ -54,24 +54,23 @@ spec:
 
 ## driver configuration
 
-In addition to the standard `warmup` and `duration` configuration, the driver measurement control specification provides for configuring the SignalFlow program, and the method(s) for computing a single `perf` result, using the free-from `userdata` section of the operator override descriptor (e.g., an app-desc.yaml provided to the server).  For example:
-
-```
-measurement:
-  control:
-    warmup:    30
-    duration:  130
-    userdata:
-      program:  'data('pod_network_transmit_bytes_total',filter('kubernetes_namespace','abc')).mean().publish()'
-      time_aggr:   avg       # compute perf metric value as the average of
-                             # space aggregates
-      space_aggr:  sum       # compute per-time value as the sum of all
-                             # values for that time
-      pre_cmd_async:  'ab -c 10 -rkl -t 1000 http://c4:8080/'
-```
+The driver measurement control specification provided by the Optune backend during optimization provides the standard `warmup` and `duration` configuration:
 
 * `warmup`:  period in seconds after adjustment when a measurement is not taken (sleep).  Default `0`.
 * `duration`:  period of measurement in seconds.  Default `120`.
+
+All other configuration is provided to this driver through a YAML descriptor `config.yaml` to be provided in the same directory as the driver on the servo itself.  Here is an example of such a configuration parameters:
+
+```
+sfx:
+    flow_program:  'data('pod_network_transmit_bytes_total',filter('kubernetes_namespace','abc')).mean().publish()'
+    time_aggr:     avg
+    space_aggr:    sum
+    pre_cmd_async: 'ab -c 10 -rkl -t 1000 http://c4:8080/'
+```
+
+The `config.yaml` descriptor supports the following configuration:
+
 * `flow_program`: a SignalFlow program (e.g. used to query time-series metrics).  Required.
 * `flow_immediate`:  boolean indicating whether or not to adjust the measurement stop timestamp so the SignalFlow computation does not wait for future data to become available.  Default `False`.
 * `flow_resolution`:  the minimum desired data resolution, in milliseconds.  Default `None` (use the default minimum time resolution)

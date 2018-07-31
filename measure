@@ -1,19 +1,46 @@
 #!/usr/bin/env python3
+'''
+Optune measure driver for SignalFx.  (C) 2018, Opsani.
+
+use:
+measure --info
+measure --describe <app_id>
+measure <app_id> < <measure-stdin-file.json>
+
+This driver requires a YAML configuration file placed at a fixed location (see
+CFG_FPATH constant).  See README.md for details.  Example config:
+
+sfx:
+    flow_program:     <val>     # REQUIRED:  SignalFlow program to query metrics
+    flow_immediate:   <val>     # optional:  boolean, default False
+    flow_resolution:  <val>     # optional:  integer ms, default None
+    stream_endpoint:  <val>     # optional:  SignalFx stream API endpoint,
+                                #            default https://stream.signalfx.com
+    time_aggr:        <val>     # optional:  aggr method for space aggregates
+                                #            default 'avg'
+    space_aggr:       <val>     # optional:  aggr method for values at give time
+                                #            default 'avg'
+    pre_cmd_async:    <val>     # optional:  async bash cmd to run before warmup
+    pre_cmd:          <val>     # optional:  bash cmd to run before warmup
+    post_cmd:         <val>     # optional:  bash cmd to run after measure
+'''
 
 import os
 import signal
 import subprocess
 import sys
 import time
+import yaml
 
 import signalfx
 
 from measure import Measure, ST_FAILED
 
-DESC='SignalFx measure driver for Opsani Optune'
-VERSION='1.0.0'
-HAS_CANCEL=True
-PROGRESS_INTERVAL=30
+DESC                 = 'SignalFx measure driver for Opsani Optune'
+VERSION              = '1.0.0'
+HAS_CANCEL           = True
+PROGRESS_INTERVAL    = 30
+CFG_FPATH            = './config.yaml'
 
 DFLT_WARMUP          = 0
 DFLT_DURATION        = 120
@@ -34,15 +61,11 @@ class SignalFx(Measure):
     # overwrites super
     def describe(self):
 
-        # @@TBD:  when describe accepts input_data as stdin, the command may then
-        # support a configured metric name and unit
-        # metric_name = self.input_data.get('control',{}).get('userdata',{}).get(
-        #     'metric_name', DFLT_METRIC_NAME)
-        # metric_unit = self.input_data.get('control',{}).get('userdata',{}).get(
-        #     'metric_unit', DFLT_METRIC_UNIT)
+        # @@TBD:  support user specified metric name and units
+        # self._parse_config()
         # return {
-        #     metric_name: {
-        #         'unit': metric_unit,
+        #     self.cfg['metric_name']: {
+        #         'unit': self.cfg['metric_unit'],
         #     }
         # }
 
@@ -69,40 +92,25 @@ class SignalFx(Measure):
         duration = int(control.get('duration', DFLT_DURATION))
         assert warmup >= 0 and duration >= 0, \
             'Both warmup {} and duration {} must be non-negative'.format(warmup, duration)
-        assert 'userdata' in control, 'Control configuration missing userdata'
-        userdata = control['userdata']
-        assert 'flow_program' in userdata, 'Control configuration userdata missing flow_program'
 
-        # parse and valcheck:  userdata of control configuration
-        flow_program    = userdata['flow_program']
-        flow_immediate  = userdata.get('flow_immediate', DFLT_FLOW_IMMEDIATE)
-        flow_resolution = userdata.get('flow_resolution', DFLT_FLOW_RESOLUTION)
-        time_aggr       = userdata.get('time_aggr', DFLT_TIME_AGGR)
-        space_aggr      = userdata.get('space_aggr', DFLT_SPACE_AGGR)
-        stream_endpoint = userdata.get('stream_endpoint', DFLT_STREAM_ENDPOINT)
-        #metric_name     = userdata.get('metric_name', DFLT_METRIC_NAME)
-        #metric_unit     = userdata.get('metric_unit', DFLT_METRIC_UNIT)
-        pre_cmd_async   = userdata.get('pre_cmd_async')
-        pre_cmd         = userdata.get('pre_cmd')
-        post_cmd        = userdata.get('post_cmd')
-        assert time_aggr in AGGR_OPERATORS, \
-            'Unknown time_aggr {}'.format(time_aggr)
-        assert space_aggr in AGGR_OPERATORS, \
-            'Unknown space_aggr {}'.format(space_aggr)
+        # parse and valcheck:  driver config
+        self._parse_config()
 
         # query sfx:  verify signalflow program is valid
-        self._init_sfx(stream_endpoint)
-        qval = self._query_sfx_metric(flow_program, flow_immediate, flow_resolution,
-            time_aggr, space_aggr, duration)
-        self.debug('Initial value for query {}:  {}'.format(flow_program, qval))
+        self._init_sfx()
+        qval = self._query_sfx_metric(self.cfg['flow_program'],
+            self.cfg['flow_immediate'], self.cfg['flow_resolution'],
+            self.cfg['time_aggr'], self.cfg['space_aggr'], duration)
+        self.debug('Initial value for query {}:  {}'.format(
+            self.cfg['flow_program'], qval))
 
         # execute pre_cmd_async, if any
-        if pre_cmd_async is not None:
-            self.proc_async = self._run_command_async(pre_cmd_async)
+        if self.cfg['pre_cmd_async'] is not None:
+            self.proc_async = self._run_command_async(self.cfg['pre_cmd_async'])
 
         # execute pre_cmd, if any
-        if pre_cmd is not None:
-            self._run_command(pre_cmd, pre=True)
+        if self.cfg['pre_cmd'] is not None:
+            self._run_command(self.cfg['pre_cmd'], pre=True)
 
         # sleep
         self.t_sleep = warmup + duration
@@ -111,12 +119,13 @@ class SignalFx(Measure):
         time.sleep(self.t_sleep)
 
         # query sfx:  measure
-        qval = self._query_sfx_metric(flow_program, flow_immediate, flow_resolution,
-            time_aggr, space_aggr, duration)
+        qval = self._query_sfx_metric(self.cfg['flow_program'],
+            self.cfg['flow_immediate'], self.cfg['flow_resolution'],
+            self.cfg['time_aggr'], self.cfg['space_aggr'], duration)
 
         # execute post_cmd, if any
-        if post_cmd is not None:
-            self._run_command(post_cmd, pre=False)
+        if self.cfg['post_cmd'] is not None:
+            self._run_command(self.cfg['post_cmd'], pre=False)
 
         # terminate pre_cmd_async, if any
         if hasattr(self, 'proc_async'):
@@ -127,7 +136,7 @@ class SignalFx(Measure):
         metrics = {
             'perf': {
                 'value': qval,
-                'annotation': flow_program,
+                'annotation': self.cfg['flow_program'],
             }
         }
         annotations = {}
@@ -148,7 +157,7 @@ class SignalFx(Measure):
         super().print_progress(message, msg_index, stage, stageprogress)
 
     # helper:  initialize sfx api module
-    def _init_sfx(self, stream_endpoint):
+    def _init_sfx(self):
 
         # as required:  read sfx_api_key from file (e.g., from k8s secret volume
         # mounted file) or from env variable
@@ -165,7 +174,7 @@ class SignalFx(Measure):
 
         # initialize sfx api module
         try:
-            self.sfx = signalfx.SignalFx(stream_endpoint=stream_endpoint)
+            self.sfx = signalfx.SignalFx(stream_endpoint=self.cfg['stream_endpoint'])
         except Exception as e:
             raise Exception(
                 'Failed to initialize SignalFx API module. Error: {}'.format(str(e)))
@@ -236,6 +245,41 @@ class SignalFx(Measure):
             preexec_fn=os.setpgrp)
         self.debug('Pre-command async:  {}'.format(cmd))
         return proc
+
+    # helper:  parse driver configuration from config file
+    def _parse_config(self):
+
+        # load YAML config file (raise any unhandled exception)
+        try:
+            fo = open(CFG_FPATH)
+            desc = yaml.load(fo)
+        except IOError as e:
+            raise Exception('Cannot read configuration from {}:  {}'.format(
+                CFG_FPATH, e.strerror))
+        except yaml.error.YAMLError as e:
+            raise Exception('Syntax error in {}:  {}'.format(CFG_FPATH, str(e)))
+        fo.close()
+
+        # parse descriptor
+        sfx = desc.get('sfx')
+        assert isinstance(sfx, dict), 'No sfx config in {}'.format(CFG_FPATH)
+        assert 'flow_program' in sfx, 'No flow_program config in {}'.format(CFG_FPATH)
+        self.cfg = {}
+        self.cfg['flow_program']    = sfx['flow_program']
+        self.cfg['flow_immediate']  = sfx.get('flow_immediate', DFLT_FLOW_IMMEDIATE)
+        self.cfg['flow_resolution'] = sfx.get('flow_resolution', DFLT_FLOW_RESOLUTION)
+        self.cfg['time_aggr']       = sfx.get('time_aggr', DFLT_TIME_AGGR)
+        self.cfg['space_aggr']      = sfx.get('space_aggr', DFLT_SPACE_AGGR)
+        self.cfg['stream_endpoint'] = sfx.get('stream_endpoint', DFLT_STREAM_ENDPOINT)
+        #self.cfg['metric_name']     = sfx.get('metric_name', DFLT_METRIC_NAME)
+        #self.cfg['metric_unit']     = sfx.get('metric_unit', DFLT_METRIC_UNIT)
+        self.cfg['pre_cmd_async']   = sfx.get('pre_cmd_async')
+        self.cfg['pre_cmd']         = sfx.get('pre_cmd')
+        self.cfg['post_cmd']        = sfx.get('post_cmd')
+        assert self.cfg['time_aggr'] in AGGR_OPERATORS, \
+            'Unknown time_aggr {}'.format(time_aggr)
+        assert self.cfg['space_aggr'] in AGGR_OPERATORS, \
+            'Unknown space_aggr {}'.format(space_aggr)
 
 
 if __name__ == '__main__':
