@@ -92,6 +92,7 @@ class SignalFx(Measure):
         duration = int(control.get('duration', DFLT_DURATION))
         assert warmup >= 0 and duration >= 0, \
             'Both warmup {} and duration {} must be non-negative'.format(warmup, duration)
+        self.t_sleep = warmup + duration
 
         # parse and valcheck:  driver config
         self._parse_config()
@@ -113,7 +114,6 @@ class SignalFx(Measure):
             self._run_command(self.cfg['pre_cmd'], pre=True)
 
         # sleep
-        self.t_sleep = warmup + duration
         self.debug('Sleeping for {:d} seconds ({:d} warmup + {:d} duration)'.format(
             self.t_sleep, warmup, duration))
         time.sleep(self.t_sleep)
@@ -152,9 +152,10 @@ class SignalFx(Measure):
             stageprogress=None):
 
         # update progress based on how much time has elapsed
-        t_taken = time.time() - self.t_measure_start
-        self.progress = int(min(100.0, 100.0*((t_taken)/self.t_sleep)))
-        super().print_progress(message, msg_index, stage, stageprogress)
+        if hasattr(self, 't_sleep'):
+            t_taken = time.time() - self.t_measure_start
+            self.progress = int(min(100.0, 100.0*((t_taken)/self.t_sleep)))
+            super().print_progress(message, msg_index, stage, stageprogress)
 
     # helper:  initialize sfx api module
     def _init_sfx(self):
