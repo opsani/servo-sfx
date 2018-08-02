@@ -51,6 +51,7 @@ DFLT_METRIC_NAME     = 'perf'
 DFLT_METRIC_UNIT     = ''
 DFLT_FLOW_IMMEDIATE  = False
 DFLT_FLOW_RESOLUTION = None
+DFLT_NODATA_PCT_OK   = 0.0
 
 AGGR_OPERATORS       = ('avg', 'max', 'min', 'sum')
 API_KEY_FPATH        = '/etc/optune-sfx-auth/api_key'
@@ -92,6 +93,7 @@ class SignalFx(Measure):
         duration = int(control.get('duration', DFLT_DURATION))
         assert warmup >= 0 and duration >= 0, \
             'Both warmup {} and duration {} must be non-negative'.format(warmup, duration)
+        nodata_pct_ok = control.get('userdata',{}).get('nodata_pct_ok', DFLT_NODATA_PCT_OK)
         self.t_sleep = warmup + duration
 
         # parse and valcheck:  driver config
@@ -101,7 +103,7 @@ class SignalFx(Measure):
         self._init_sfx()
         qval = self._query_sfx_metric(self.cfg['flow_program'],
             self.cfg['flow_immediate'], self.cfg['flow_resolution'],
-            self.cfg['time_aggr'], self.cfg['space_aggr'], duration)
+            self.cfg['time_aggr'], self.cfg['space_aggr'], duration, nodata_pct_ok)
         self.debug('Initial value for query {}:  {}'.format(
             self.cfg['flow_program'], qval))
 
@@ -121,7 +123,7 @@ class SignalFx(Measure):
         # query sfx:  measure
         qval = self._query_sfx_metric(self.cfg['flow_program'],
             self.cfg['flow_immediate'], self.cfg['flow_resolution'],
-            self.cfg['time_aggr'], self.cfg['space_aggr'], duration)
+            self.cfg['time_aggr'], self.cfg['space_aggr'], duration, nodata_pct_ok)
 
         # execute post_cmd, if any
         if self.cfg['post_cmd'] is not None:
@@ -183,8 +185,10 @@ class SignalFx(Measure):
     # helper:  query sfx metrics over last duration seconds and return
     # value computed from aggregating in time and space
     def _query_sfx_metric(self, program, immediate, resolution, time_aggr,
-        space_aggr, duration):
+        space_aggr, duration, nodata_pct_ok):
 
+        n_data_msg = 0
+        n_nodata_msg = 0
         space_aggr_vals = []
         with self.sfx.signalflow(self.sfx_api_key) as flow:
 
@@ -203,15 +207,25 @@ class SignalFx(Measure):
             for msg in computation.stream():
                 if isinstance(msg, signalfx.signalflow.messages.DataMessage):
                     space_vals = list(msg.data.values())
-                    assert len(space_vals) > 0, \
-                        'SignalFx query for program {} returned empty data {}'.format(
-                        program, msg.data)
-                    space_aggr_vals.append(self._aggregate_values(space_vals,
-                        space_aggr))
+                    if len(space_vals) == 0:
+                        n_nodata_msg += 1
+                    else:
+                        n_data_msg += 1
+                        space_aggr_vals.append(self._aggregate_values(space_vals,
+                            space_aggr))
+
+        # verify percent of empty data messages is below configured threshold
+        self.debug('SignalFlow stream: {} data msgs, {} nodata msgs'.format(
+            n_data_msg, n_nodata_msg))
+        n_msg = n_data_msg + n_nodata_msg
+        nodata_pct = 100.0 * (n_nodata_msg / n_msg)
+        assert nodata_pct <= nodata_pct_ok, \
+            'SignalFlow stream:  {:.2f}% of {} data msgs are empty ({:.2f}% is ok)'.format(
+            nodata_pct, n_msg, nodata_pct_ok)
+        assert len(space_aggr_vals) > 0, \
+            'SignalFx query for program {} returned no time series metrics data'
 
         # aggregate in time and return value
-        assert len(space_aggr_vals) > 0, \
-            'SignalFx query for program {} returned no data messages'
         return self._aggregate_values(space_aggr_vals, time_aggr)
 
     # helper:  return an aggregate value computed from an input list of values
