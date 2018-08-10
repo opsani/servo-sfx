@@ -59,28 +59,30 @@ The driver measurement control specification provided by the Optune backend duri
 * `warmup`:  period in seconds after adjustment when a measurement is not taken (sleep).  Default `0`.
 * `duration`:  period of measurement in seconds.  Default `120`.
 
-All other configuration is provided to this driver through a YAML descriptor `config.yaml` to be provided in the same directory as the driver on the servo itself.  Here is an example of such a configuration parameters:
+All other configuration is provided to this driver through a YAML descriptor `config.yaml` to be provided in the same directory as the driver on the servo itself.  Here is an example of such a descriptor:
 
 ```
 sfx:
-    flow_program:  'data('pod_network_transmit_bytes_total',filter('kubernetes_namespace','abc')).mean().publish()'
-    time_aggr:     avg
-    space_aggr:    sum
     pre_cmd_async: 'ab -c 10 -rkl -t 1000 http://c4:8080/'
+    metrics:
+        perf:
+            flow_program:  "data('pod_network_transmit_bytes_total',filter('kubernetes_namespace','abc')).mean().publish()"
+            time_aggr:     avg
+            space_aggr:    sum
+            unit:          bytes
 ```
 
-The `config.yaml` descriptor supports the following configuration:
+The `config.yaml` descriptor must include at least one named metric.  If the metric name is `perf` the value of this metric will be used by default as the performance measurement during optimization.  Multiple named metrics may also be used to compute a performance measurement using a formula defined in the operator override descriptor.  In addition to the metrics specification, this descriptor supports the following configuration:
+
+* `pre_cmd_async`:  Bash shell command to execute prior to warmup.  This optional command may be a string or a list.  This command is executed asynchronously with stdout/stderr directed to /dev/null.  If the process is still running after measurement, it is terminated.  This command is suitable for generating load during measurement, typically for testing purposes, as in the example above.
+* `pre_cmd`:  Bash shell command to execute prior to warmup.  This optional command may be a string or a list.
+* `post_cmd`:  Bash shell command to execute after measurement.  This optional command may be a string or a list.
+* `stream_endpoint`:  endpoint for SignalFx stream API.  Default `https://stream.signalfx.com`.
+
+Each metric in the metrics section of the `config.yaml` descripor supports the following configuration:
 
 * `flow_program`: a SignalFlow program (e.g. used to query time-series metrics).  Required.
 * `flow_immediate`:  boolean indicating whether or not to adjust the measurement stop timestamp so the SignalFlow computation does not wait for future data to become available.  Default `False`.
 * `flow_resolution`:  the minimum desired data resolution, in milliseconds.  Default `None` (use the default minimum time resolution)
 * `time_aggr`:  aggregation method for space aggregate values (used to create a single `perf` metric).  One of avg|max|min|sum.  Default `avg`.
 * `space_aggr`:  aggregation method for all values at a given time.  One of avg|max|min|sum.  Default `avg`.
-* `pre_cmd_async`:  Bash shell command to execute prior to warmup.  This optional command may be a string or a list.  This command is executed asynchronously with stdout/stderr directed to /dev/null.  If the process is still running after measurement, it is terminated.  This command is suitable for generating load during measurement, typically for testing purposes, as in the example above.
-* `pre_cmd`:  Bash shell command to execute prior to warmup.  This optional command may be a string or a list.
-* `post_cmd`:  Bash shell command to execute after measurement.  This optional command may be a string or a list.
-* `stream_endpoint`:  endpoint for SignalFx stream API.  Default `https://stream.signalfx.com`.
-
-**TBD** implementation required...
-* `metric_name`:  metric name.  Default `perf`.
-* `metric_unit`:  metric unit, returned by the `describe` command.  Default '' (empty string).

@@ -11,18 +11,25 @@ This driver requires a YAML configuration file placed at a fixed location (see
 CFG_FPATH constant).  See README.md for details.  Example config:
 
 sfx:
-    flow_program:     <val>     # REQUIRED:  SignalFlow program to query metrics
-    flow_immediate:   <val>     # optional:  boolean, default False
-    flow_resolution:  <val>     # optional:  integer ms, default None
     stream_endpoint:  <val>     # optional:  SignalFx stream API endpoint,
                                 #            default https://stream.signalfx.com
-    time_aggr:        <val>     # optional:  aggr method for space aggregates
-                                #            default 'avg'
-    space_aggr:       <val>     # optional:  aggr method for values at give time
-                                #            default 'avg'
     pre_cmd_async:    <val>     # optional:  async bash cmd to run before warmup
     pre_cmd:          <val>     # optional:  bash cmd to run before warmup
     post_cmd:         <val>     # optional:  bash cmd to run after measure
+
+    metrics:
+        <metric1_name>:
+            flow_program:    <val>     # REQUIRED:  SignalFlow program to query metrics
+            flow_immediate:  <val>     # optional:  boolean, default False
+            flow_resolution: <val>     # optional:  integer ms, default None
+            time_aggr:       <val>     # optional:  aggr method for space aggregates
+                                       #            default 'avg'
+            space_aggr:      <val>     # optional:  aggr method for values at a
+                                       #            given time; default 'avg'
+            unit:            <val>     # optional:  unit of metric, e.g 'req/sec'
+        <metric2_name>:
+            flow_program:  ...
+
 '''
 
 import os
@@ -47,8 +54,6 @@ DFLT_DURATION        = 120
 DFLT_TIME_AGGR       = 'avg'
 DFLT_SPACE_AGGR      = 'avg'
 DFLT_STREAM_ENDPOINT = 'https://stream.signalfx.com'
-DFLT_METRIC_NAME     = 'perf'
-DFLT_METRIC_UNIT     = ''
 DFLT_FLOW_IMMEDIATE  = False
 DFLT_FLOW_RESOLUTION = None
 DFLT_NODATA_PCT_OK   = 0.0
@@ -62,15 +67,16 @@ class SignalFx(Measure):
     # overwrites super
     def describe(self):
 
-        # @@TBD:  support user specified metric name and units
-        # self._parse_config()
-        # return {
-        #     self.cfg['metric_name']: {
-        #         'unit': self.cfg['metric_unit'],
-        #     }
-        # }
+        # parse driver config and construct metrics describe response
+        self._parse_config()
+        description = {}
+        for metric_name, metric in self.cfg['metrics'].items():
+            metric_spec = {}
+            if metric.get('unit') is not None:
+                metric_spec['unit'] = metric.get('unit')
+            description[metric_name] = metric_spec
 
-        return {'perf': {}}
+        return description
 
     # overwrites super
     def handle_cancel(self, signal, frame):
@@ -99,13 +105,16 @@ class SignalFx(Measure):
         # parse and valcheck:  driver config
         self._parse_config()
 
-        # query sfx:  verify signalflow program is valid
+        # query sfx:  verify signalflow program(s) are valid
         self._init_sfx()
-        qval = self._query_sfx_metric(self.cfg['flow_program'],
-            self.cfg['flow_immediate'], self.cfg['flow_resolution'],
-            self.cfg['time_aggr'], self.cfg['space_aggr'], duration, nodata_pct_ok)
-        self.debug('Initial value for query {}:  {}'.format(
-            self.cfg['flow_program'], qval))
+        end_time = time.time()
+        for metric_name, metric in self.cfg['metrics'].items():
+            qval = self._query_sfx_metric(metric['flow_program'],
+                metric['flow_immediate'], metric['flow_resolution'],
+                metric['time_aggr'], metric['space_aggr'], end_time,
+                duration, nodata_pct_ok)
+            self.debug('Initial value for query {}:  {}'.format(
+                metric['flow_program'], qval))
 
         # execute pre_cmd_async, if any
         if self.cfg['pre_cmd_async'] is not None:
@@ -121,9 +130,21 @@ class SignalFx(Measure):
         time.sleep(self.t_sleep)
 
         # query sfx:  measure
-        qval = self._query_sfx_metric(self.cfg['flow_program'],
-            self.cfg['flow_immediate'], self.cfg['flow_resolution'],
-            self.cfg['time_aggr'], self.cfg['space_aggr'], duration, nodata_pct_ok)
+        measurement = {}
+        annotations = {}
+        end_time = time.time()
+        for metric_name, metric in self.cfg['metrics'].items():
+            qval = self._query_sfx_metric(metric['flow_program'],
+                metric['flow_immediate'], metric['flow_resolution'],
+                metric['time_aggr'], metric['space_aggr'], end_time,
+                duration, nodata_pct_ok)
+            metric_spec = {
+                'value': qval,
+                'annotation': metric['flow_program'],
+            }
+            if metric.get('unit') is not None:
+                metric_spec['unit'] = metric.get('unit')
+            measurement[metric_name] = metric_spec
 
         # execute post_cmd, if any
         if self.cfg['post_cmd'] is not None:
@@ -133,17 +154,7 @@ class SignalFx(Measure):
         if hasattr(self, 'proc_async'):
             os.killpg(os.getpgid(self.proc_async.pid), signal.SIGTERM)
 
-        # construct result:  use computed value for perf metric
-        # @@TBD:  use metric_name and metric_unit when describe supports this
-        metrics = {
-            'perf': {
-                'value': qval,
-                'annotation': self.cfg['flow_program'],
-            }
-        }
-        annotations = {}
-
-        return metrics, annotations
+        return measurement, annotations
 
     # overwrites super:  update progress before printing it
     def print_progress(
@@ -185,7 +196,7 @@ class SignalFx(Measure):
     # helper:  query sfx metrics over last duration seconds and return
     # value computed from aggregating in time and space
     def _query_sfx_metric(self, program, immediate, resolution, time_aggr,
-        space_aggr, duration, nodata_pct_ok):
+        space_aggr, end_time, duration, nodata_pct_ok):
 
         n_data_msg = 0
         n_nodata_msg = 0
@@ -193,10 +204,10 @@ class SignalFx(Measure):
         with self.sfx.signalflow(self.sfx_api_key) as flow:
 
             # execute SignalFlow program, obtaining a stream object:
-            now_ms = int(time.time()) * 1000
-            start_ms = now_ms - (duration * 1000)
+            stop_ms = int(end_time) * 1000
+            start_ms = stop_ms - (duration * 1000)
             try:
-                computation = flow.execute(program, start=start_ms, stop=now_ms,
+                computation = flow.execute(program, start=start_ms, stop=stop_ms,
                     immediate=immediate, resolution=resolution)
             except Exception as e:
                 raise Exception(
@@ -223,7 +234,8 @@ class SignalFx(Measure):
             'SignalFlow stream:  {:.2f}% of {} data msgs are empty ({:.2f}% is ok)'.format(
             nodata_pct, n_msg, nodata_pct_ok)
         assert len(space_aggr_vals) > 0, \
-            'SignalFx query for program {} returned no time series metrics data'
+            'SignalFx query for program {} returned no time series metrics data'.format(
+            program)
 
         # aggregate in time and return value
         return self._aggregate_values(space_aggr_vals, time_aggr)
@@ -278,23 +290,33 @@ class SignalFx(Measure):
         # parse descriptor
         sfx = desc.get('sfx')
         assert isinstance(sfx, dict), 'No sfx config in {}'.format(CFG_FPATH)
-        assert 'flow_program' in sfx, 'No flow_program config in {}'.format(CFG_FPATH)
         self.cfg = {}
-        self.cfg['flow_program']    = sfx['flow_program']
-        self.cfg['flow_immediate']  = sfx.get('flow_immediate', DFLT_FLOW_IMMEDIATE)
-        self.cfg['flow_resolution'] = sfx.get('flow_resolution', DFLT_FLOW_RESOLUTION)
-        self.cfg['time_aggr']       = sfx.get('time_aggr', DFLT_TIME_AGGR)
-        self.cfg['space_aggr']      = sfx.get('space_aggr', DFLT_SPACE_AGGR)
         self.cfg['stream_endpoint'] = sfx.get('stream_endpoint', DFLT_STREAM_ENDPOINT)
-        #self.cfg['metric_name']     = sfx.get('metric_name', DFLT_METRIC_NAME)
-        #self.cfg['metric_unit']     = sfx.get('metric_unit', DFLT_METRIC_UNIT)
         self.cfg['pre_cmd_async']   = sfx.get('pre_cmd_async')
         self.cfg['pre_cmd']         = sfx.get('pre_cmd')
         self.cfg['post_cmd']        = sfx.get('post_cmd')
-        assert self.cfg['time_aggr'] in AGGR_OPERATORS, \
-            'Unknown time_aggr {}'.format(time_aggr)
-        assert self.cfg['space_aggr'] in AGGR_OPERATORS, \
-            'Unknown space_aggr {}'.format(space_aggr)
+
+        # parse descriptor:  metrics
+        metrics = sfx.get('metrics',{})
+        assert isinstance(metrics, dict) and len(metrics) > 0, \
+            'No metrics config in {}'.format(CFG_PATH)
+        for metric_name, metric in metrics.items():
+            assert 'flow_program' in metric, \
+                'No flow_program configured for metric {} in {}'.format(
+                metric_name, CFG_PATH)
+            metric['flow_immediate'] = metric.get('flow_immediate',
+                DFLT_FLOW_IMMEDIATE)
+            metric['flow_resolution'] = metric.get('flow_resolution',
+                DFLT_FLOW_RESOLUTION)
+            metric['time_aggr'] = metric.get('time_aggr', DFLT_TIME_AGGR)
+            metric['space_aggr'] = metric.get('space_aggr', DFLT_SPACE_AGGR)
+            assert metric['time_aggr'] in AGGR_OPERATORS, \
+                'Unknown time_aggr {} for metric {} in {}'.format(
+                metric['time_aggr'], metric_name, CFG_PATH)
+            assert metric['space_aggr'] in AGGR_OPERATORS, \
+                'Unknown space_aggr {} for metric {} in {}'.format(
+                metric['space_aggr'], metric_name, CFG_PATH)
+        self.cfg['metrics'] = metrics
 
 
 if __name__ == '__main__':
