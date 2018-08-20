@@ -32,6 +32,7 @@ sfx:
 
 '''
 
+import numbers
 import os
 import signal
 import subprocess
@@ -217,7 +218,8 @@ class SignalFx(Measure):
             # process messages in computation stream
             for msg in computation.stream():
                 if isinstance(msg, signalfx.signalflow.messages.DataMessage):
-                    space_vals = list(msg.data.values())
+                    space_vals = [x for x in list(msg.data.values()) if isinstance(
+                        x, numbers.Number)]
                     if len(space_vals) == 0:
                         n_nodata_msg += 1
                     else:
