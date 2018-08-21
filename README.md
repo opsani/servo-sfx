@@ -77,6 +77,8 @@ The `config.yaml` descriptor must include at least one named metric.  If the met
 * `pre_cmd_async`:  Bash shell command to execute prior to warmup.  This optional command may be a string or a list.  This command is executed asynchronously with stdout/stderr directed to /dev/null.  If the process is still running after measurement, it is terminated.  This command is suitable for generating load during measurement, typically for testing purposes, as in the example above.
 * `pre_cmd`:  Bash shell command to execute prior to warmup.  This optional command may be a string or a list.
 * `post_cmd`:  Bash shell command to execute after measurement.  This optional command may be a string or a list.
+* `pre_cmd_tout`:  optional timeout in seconds for `pre_cmd`.
+* `post_cmd_tout`:  optional timeout in seconds for `post_cmd`.
 * `stream_endpoint`:  endpoint for SignalFx stream API.  Default `https://stream.signalfx.com`.
 
 Each metric in the metrics section of the `config.yaml` descripor supports the following configuration:
