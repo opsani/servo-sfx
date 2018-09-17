@@ -233,11 +233,11 @@ class SignalFx(Measure):
         # verify percent of empty data messages is below configured threshold
         n_msg = n_data_msg + n_nodata_msg
         nodata_pct = 100.0 * (n_nodata_msg / n_msg)
-        self._nfy('SignalFlow stream: {} data msgs, {} nodata msgs, {:.2f}% empty'.format(
-            n_data_msg, n_nodata_msg, nodata_pct))
+        self._nfy('SignalFlow stream: {} data msgs, {} nodata msgs, {:.2f}% empty for program {}'.format(
+            n_data_msg, n_nodata_msg, nodata_pct, program))
         assert nodata_pct <= nodata_pct_ok, \
-            'SignalFlow stream:  {:.2f}% of {} data msgs are empty ({:.2f}% is ok)'.format(
-            nodata_pct, n_msg, nodata_pct_ok)
+            'SignalFlow stream:  {:.2f}% of {} data msgs are empty ({:.2f}% is ok) for program {}'.format(
+            nodata_pct, n_msg, nodata_pct_ok, program)
         assert len(space_aggr_vals) > 0, \
             'SignalFx query for program {} returned no time series metrics data'.format(
             program)
