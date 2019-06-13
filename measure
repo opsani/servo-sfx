@@ -22,10 +22,6 @@ sfx:
             flow_program:    <val>     # REQUIRED:  SignalFlow program to query metrics
             flow_immediate:  <val>     # optional:  boolean, default False
             flow_resolution: <val>     # optional:  integer ms, default None
-            time_aggr:       <val>     # optional:  aggr method for space aggregates
-                                       #            default 'avg'
-            space_aggr:      <val>     # optional:  aggr method for values at a
-                                       #            given time; default 'avg'
             unit:            <val>     # optional:  unit of metric, e.g 'req/sec'
         <metric2_name>:
             flow_program:  ...
@@ -39,6 +35,8 @@ import signal
 import subprocess
 import sys
 import time
+from collections import OrderedDict
+
 import yaml
 
 import signalfx
@@ -53,14 +51,11 @@ CFG_FPATH            = './config.yaml'
 
 DFLT_WARMUP          = 0
 DFLT_DURATION        = 120
-DFLT_TIME_AGGR       = 'avg'
-DFLT_SPACE_AGGR      = 'avg'
 DFLT_STREAM_ENDPOINT = 'https://stream.signalfx.com'
 DFLT_FLOW_IMMEDIATE  = False
 DFLT_FLOW_RESOLUTION = None
 DFLT_NODATA_PCT_OK   = 0.0
 
-AGGR_OPERATORS       = ('avg', 'max', 'min', 'sum')
 API_KEY_FPATH        = '/etc/optune-sfx-auth/api_key'
 API_KEY_ENV_VAR      = 'OPTUNE_SFX_API_KEY'
 
@@ -111,10 +106,8 @@ class SignalFx(Measure):
         self._init_sfx()
         end_time = time.time()
         for metric_name, metric in self.cfg['metrics'].items():
-            qval = self._query_sfx_metric(metric['flow_program'],
-                metric['flow_immediate'], metric['flow_resolution'],
-                metric['time_aggr'], metric['space_aggr'], end_time,
-                duration, nodata_pct_ok)
+            qval = self._query_sfx_metric(metric['flow_program'], metric['flow_immediate'], metric['flow_resolution'],
+                                          end_time, duration)
             self._nfy('Initial value for query {}:  {}'.format(
                 metric['flow_program'], qval))
 
@@ -137,10 +130,8 @@ class SignalFx(Measure):
         annotations = {}
         end_time = time.time()
         for metric_name, metric in self.cfg['metrics'].items():
-            qval = self._query_sfx_metric(metric['flow_program'],
-                metric['flow_immediate'], metric['flow_resolution'],
-                metric['time_aggr'], metric['space_aggr'], end_time,
-                duration, nodata_pct_ok)
+            qval = self._query_sfx_metric(metric['flow_program'], metric['flow_immediate'], metric['flow_resolution'],
+                                          end_time, duration)
             metric_spec = {
                 'value': qval,
                 'annotation': metric['flow_program'],
@@ -197,14 +188,9 @@ class SignalFx(Measure):
             raise Exception(
                 'Failed to initialize SignalFx API module. Error: {}'.format(str(e)))
 
-    # helper:  query sfx metrics over last duration seconds and return
-    # value computed from aggregating in time and space
-    def _query_sfx_metric(self, program, immediate, resolution, time_aggr,
-        space_aggr, end_time, duration, nodata_pct_ok):
+    # helper:  query sfx metrics over last duration seconds
+    def _query_sfx_metric(self, program, immediate, resolution, end_time, duration):
 
-        n_data_msg = 0
-        n_nodata_msg = 0
-        space_aggr_vals = []
         with self.sfx.signalflow(self.sfx_api_key) as flow:
 
             # execute SignalFlow program, obtaining a stream object:
@@ -218,44 +204,32 @@ class SignalFx(Measure):
                     'Failed to query SignalFx for program {}. Error: {}'.format(
                     program, str(e)))
 
+            metadata_objects = {}
+            data_messages = []
+
             # process messages in computation stream
             for msg in computation.stream():
+                if isinstance(msg, signalfx.signalflow.messages.MetadataMessage):
+                    metadata_objects[msg.tsid] = msg.properties
                 if isinstance(msg, signalfx.signalflow.messages.DataMessage):
-                    space_vals = [x for x in list(msg.data.values()) if isinstance(
-                        x, numbers.Number)]
-                    if len(space_vals) == 0:
-                        n_nodata_msg += 1
-                    else:
-                        n_data_msg += 1
-                        space_aggr_vals.append(self._aggregate_values(space_vals,
-                            space_aggr))
+                    data_messages.append(msg)
 
-        # verify percent of empty data messages is below configured threshold
-        n_msg = n_data_msg + n_nodata_msg
-        nodata_pct = 100.0 * (n_nodata_msg / n_msg)
-        self._nfy('SignalFlow stream: {} data msgs, {} nodata msgs, {:.2f}% empty for program {}'.format(
-            n_data_msg, n_nodata_msg, nodata_pct, program))
-        assert nodata_pct <= nodata_pct_ok, \
-            'SignalFlow stream:  {:.2f}% of {} data msgs are empty ({:.2f}% is ok) for program {}'.format(
-            nodata_pct, n_msg, nodata_pct_ok, program)
-        assert len(space_aggr_vals) > 0, \
-            'SignalFx query for program {} returned no time series metrics data'.format(
-            program)
+            # Read more about 'sf_key' at https://developers.signalfx.com/signalflow_analytics/rest_api_messages/stream_messages_specification.html#_metadata_messages
+            inapplicable_sf_keys = ['sf_metric', 'sf_originatingMetric', 'computationId']
+            inst_ret = OrderedDict()
 
-        # aggregate in time and return value
-        return self._aggregate_values(space_aggr_vals, time_aggr)
+            for tsid, props in metadata_objects.items():
+                group_id_key = next(filter(lambda key: key not in inapplicable_sf_keys, props['sf_key']))
+                group_id = props[group_id_key]
+                inst_ret[tsid] = {'id': str(group_id), 'data': []}
 
-    # helper:  return an aggregate value computed from an input list of values
-    def _aggregate_values(self, vals, aggr):
-        if aggr == 'avg':
-            return sum(vals) / float(len(vals))
-        if aggr == 'max':
-            return max(vals)
-        if aggr == 'min':
-            return min(vals)
-        if aggr == 'sum':
-            return sum(vals)
-        raise Exception('Unexpected aggregation method {}'.format(aggr))
+            for msg in data_messages:
+                for tsid, value in msg.data.items():
+                    inst = inst_ret[tsid]
+                    inst['data'].append((msg.logical_timestamp_ms, value))
+            inst_ret_values = list(inst_ret.values())
+
+        return inst_ret_values
 
     # helper:  run a Bash shell command and raise an Exception on failure
     # note:  if cmd is a string, this supports shell pipes, environment variable
@@ -315,14 +289,6 @@ class SignalFx(Measure):
                 DFLT_FLOW_IMMEDIATE)
             metric['flow_resolution'] = metric.get('flow_resolution',
                 DFLT_FLOW_RESOLUTION)
-            metric['time_aggr'] = metric.get('time_aggr', DFLT_TIME_AGGR)
-            metric['space_aggr'] = metric.get('space_aggr', DFLT_SPACE_AGGR)
-            assert metric['time_aggr'] in AGGR_OPERATORS, \
-                'Unknown time_aggr {} for metric {} in {}'.format(
-                metric['time_aggr'], metric_name, CFG_PATH)
-            assert metric['space_aggr'] in AGGR_OPERATORS, \
-                'Unknown space_aggr {} for metric {} in {}'.format(
-                metric['space_aggr'], metric_name, CFG_PATH)
         self.cfg['metrics'] = metrics
 
     # helper:  print a msg to servo stderr (debug log) and log to the Optune
