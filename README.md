@@ -17,10 +17,7 @@ data('pod_network_transmit_bytes_total',filter('kubernetes_namespace','abc')).me
 ```
 In this case the `mean()` method is used to aggregate a given set of time-stamped data to a single value, so that the data returned includes one value per time (e.g., aggregated for all pods in the abc namespace).
 
-Whether or not the SignalFlow program uses any form of aggregation, this driver presently returns a single value for a single metric, named `perf` by default.  This value is computed from the time series data returned from a single SignalFlow API query as follows:
-
-* space aggregation:  for a given time, aggregate all of the data values to produce a single value using one of these methods:  avg, max, min, sum (if there is just one time series pointlist, these are all the same)
-* time aggregation:  aggregate all of the space aggregates to produce a single value (e.g., perf metric) using one of these methods:  avg, max, min, sum
+Please, define parameter `by` for aggregation method, so that we can distinguish timeseries across instances of an application. A few good examples: `.mean(by='container_id')` or `.mean(by='kubernetes_pod_name')`
 
 ## servo configuration
 
@@ -86,5 +83,3 @@ Each metric in the metrics section of the `config.yaml` descripor supports the f
 * `flow_program`: a SignalFlow program (e.g. used to query time-series metrics).  Required.
 * `flow_immediate`:  boolean indicating whether or not to adjust the measurement stop timestamp so the SignalFlow computation does not wait for future data to become available.  Default `False`.
 * `flow_resolution`:  the minimum desired data resolution, in milliseconds.  Default `None` (use the default minimum time resolution)
-* `time_aggr`:  aggregation method for space aggregate values (used to create a single `perf` metric).  One of avg|max|min|sum.  Default `avg`.
-* `space_aggr`:  aggregation method for all values at a given time.  One of avg|max|min|sum.  Default `avg`.
