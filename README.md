@@ -17,7 +17,7 @@ data('pod_network_transmit_bytes_total',filter('kubernetes_namespace','abc')).me
 ```
 In this case the `mean()` method is used to aggregate a given set of time-stamped data to a single value, so that the data returned includes one value per time (e.g., aggregated for all pods in the abc namespace).
 
-Please, define parameter `by` for aggregation method, so that we can distinguish timeseries across instances of an application. A few good examples: `.mean(by='container_id')` or `.mean(by='kubernetes_pod_name')`
+Please, define parameter `by` for aggregation method, so that we can distinguish timeseries across instances of an application. A few good examples: `.mean(by='container_id')` or `.precentile(95, by='kubernetes_pod_name')`. You can put as many clauses in `by` parameter as a list. Keep in mind they will be concatenated and used as an id, e.g. `container_id:abc   kubernetes_pod_name:abc_xyz` (in the form of `name:value` separated by 3 empty spaces).
 
 ## servo configuration
 
@@ -64,8 +64,6 @@ sfx:
     metrics:
         perf:
             flow_program:  "data('pod_network_transmit_bytes_total',filter('kubernetes_namespace','abc')).mean().publish()"
-            time_aggr:     avg
-            space_aggr:    sum
             unit:          bytes
 ```
 
