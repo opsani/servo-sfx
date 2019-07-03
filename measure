@@ -202,17 +202,21 @@ class SignalFx(Measure):
             # process messages in computation stream
             for msg in computation.stream():
                 if isinstance(msg, signalfx.signalflow.messages.MetadataMessage):
-                    metadata_messages[msg.tsid] = msg.properties
+                    metadata_messages[msg.tsid] = msg
                 if isinstance(msg, signalfx.signalflow.messages.DataMessage):
-                    data_messages.append(msg)
+                    if msg.data:
+                        data_messages.append(msg)
 
             # Read more about 'sf_key' at https://developers.signalfx.com/signalflow_analytics/rest_api_messages/stream_messages_specification.html#_metadata_messages
             inapplicable_sf_keys = ['sf_metric', 'sf_originatingMetric', 'computationId']
             inst_ret = OrderedDict()
 
             for tsid, msg in metadata_messages.items():
-                group_id_key = next(filter(lambda key: key not in inapplicable_sf_keys, msg['sf_key']))
-                group_id = msg[group_id_key]
+                id_keys = sorted(set(msg.properties['sf_key']) - set(inapplicable_sf_keys))
+                if id_keys:
+                    group_id = '   '.join(map(lambda key: '{}:{}'.format(key, msg.properties[key]), id_keys))
+                else:
+                    group_id = tsid
                 inst_ret[tsid] = {'id': str(group_id), 'data': []}
 
             for msg in data_messages:
