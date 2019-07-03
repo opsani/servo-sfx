@@ -216,19 +216,23 @@ class SignalFx(Measure):
             for tsid, msg in metadata_messages.items():
                 id_keys = sorted(set(msg.properties['sf_key']) - set(inapplicable_sf_keys))
                 if id_keys:
-                    # Metadata message has always have `properties` key which is an object that contains that particular timeseries meta properties.
+                    # Group id represents an identification for a particular timeseries set of a particular metric
+                    # Metadata message will always have `properties` key, which is an object that contains particular timeseries meta properties.
                     # Keys from `sf_key` meta property will always be present in metadata object `properties` of the message.
                     # If there's no other timeseries identifying keys present in `sf_key` list, then use timeseries id which is SignalFx's internal identifier.
+                    # To have actual instance id as an identifier provide grouping within particular metric's program based on the metric property that represents instance id.
                     group_id = '   '.join(map(lambda key: '{}:{}'.format(key, msg.properties[key]), id_keys))
                 else:
                     group_id = tsid
-                inst_ret[tsid] = {'id': str(group_id), 'data': []}
+                inst_ret[tsid] = {'data': [], 'id': str(group_id)}
 
-            # Populate timeseries with datapoints acquired from data messages by SignalFx timeseries id (tsid)
+            # Populate resulting timeseries with datapoints acquired from incoming data messages using SignalFx timeseries id (tsid) that we got from incoming metadata messages.
+            # Expected resulting data structure to be sent to the backend: [{"data": [[timestamp, value], …], "id": group_id}, …]
             for msg in data_messages:
                 for tsid, value in msg.data.items():
                     inst = inst_ret[tsid]
-                    inst['data'].append((msg.logical_timestamp_ms, value))
+                    datapoint = [msg.logical_timestamp_ms, value]
+                    inst['data'].append(datapoint)
 
         return list(inst_ret.values())
 
