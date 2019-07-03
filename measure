@@ -29,7 +29,6 @@ sfx:
 '''
 
 import json
-import numbers
 import os
 import signal
 import subprocess
@@ -54,7 +53,6 @@ DFLT_DURATION        = 120
 DFLT_STREAM_ENDPOINT = 'https://stream.signalfx.com'
 DFLT_FLOW_IMMEDIATE  = False
 DFLT_FLOW_RESOLUTION = None
-DFLT_NODATA_PCT_OK   = 0.0
 
 API_KEY_FPATH        = '/etc/optune-sfx-auth/api_key'
 API_KEY_ENV_VAR      = 'OPTUNE_SFX_API_KEY'
@@ -88,7 +86,6 @@ class SignalFx(Measure):
 
     # overwrites super
     def measure(self):
-
         # parse and valcheck:  control configuration
         assert 'control' in self.input_data, 'Input data missing control configuration'
         control  = self.input_data['control']
@@ -96,7 +93,6 @@ class SignalFx(Measure):
         duration = int(control.get('duration', DFLT_DURATION))
         assert warmup >= 0 and duration >= 0, \
             'Both warmup {} and duration {} must be non-negative'.format(warmup, duration)
-        nodata_pct_ok = control.get('userdata',{}).get('nodata_pct_ok', DFLT_NODATA_PCT_OK)
         self.t_sleep = warmup + duration
 
         # parse and valcheck:  driver config
@@ -158,7 +154,6 @@ class SignalFx(Measure):
             msg_index=None,
             stage=None,
             stageprogress=None):
-
         # update progress based on how much time has elapsed
         if hasattr(self, 't_sleep'):
             t_taken = time.time() - self.t_measure_start
@@ -167,7 +162,6 @@ class SignalFx(Measure):
 
     # helper:  initialize sfx api module
     def _init_sfx(self):
-
         # as required:  read sfx_api_key from file (e.g., from k8s secret volume
         # mounted file) or from env variable
         if not hasattr(self, 'sfx_api_key'):
@@ -190,9 +184,7 @@ class SignalFx(Measure):
 
     # helper:  query sfx metrics over last duration seconds
     def _query_sfx_metric(self, program, immediate, resolution, end_time, duration):
-
         with self.sfx.signalflow(self.sfx_api_key) as flow:
-
             # execute SignalFlow program, obtaining a stream object:
             stop_ms = int(end_time) * 1000
             start_ms = stop_ms - (duration * 1000)
@@ -204,13 +196,13 @@ class SignalFx(Measure):
                     'Failed to query SignalFx for program {}. Error: {}'.format(
                     program, str(e)))
 
-            metadata_objects = {}
+            metadata_messages = {}
             data_messages = []
 
             # process messages in computation stream
             for msg in computation.stream():
                 if isinstance(msg, signalfx.signalflow.messages.MetadataMessage):
-                    metadata_objects[msg.tsid] = msg.properties
+                    metadata_messages[msg.tsid] = msg.properties
                 if isinstance(msg, signalfx.signalflow.messages.DataMessage):
                     data_messages.append(msg)
 
@@ -218,18 +210,17 @@ class SignalFx(Measure):
             inapplicable_sf_keys = ['sf_metric', 'sf_originatingMetric', 'computationId']
             inst_ret = OrderedDict()
 
-            for tsid, props in metadata_objects.items():
-                group_id_key = next(filter(lambda key: key not in inapplicable_sf_keys, props['sf_key']))
-                group_id = props[group_id_key]
+            for tsid, msg in metadata_messages.items():
+                group_id_key = next(filter(lambda key: key not in inapplicable_sf_keys, msg['sf_key']))
+                group_id = msg[group_id_key]
                 inst_ret[tsid] = {'id': str(group_id), 'data': []}
 
             for msg in data_messages:
                 for tsid, value in msg.data.items():
                     inst = inst_ret[tsid]
                     inst['data'].append((msg.logical_timestamp_ms, value))
-            inst_ret_values = list(inst_ret.values())
 
-        return inst_ret_values
+        return list(inst_ret.values())
 
     # helper:  run a Bash shell command and raise an Exception on failure
     # note:  if cmd is a string, this supports shell pipes, environment variable
@@ -280,11 +271,11 @@ class SignalFx(Measure):
         # parse descriptor:  metrics
         metrics = sfx.get('metrics',{})
         assert isinstance(metrics, dict) and len(metrics) > 0, \
-            'No metrics config in {}'.format(CFG_PATH)
+            'No metrics config in {}'.format(CFG_FPATH)
         for metric_name, metric in metrics.items():
             assert 'flow_program' in metric, \
                 'No flow_program configured for metric {} in {}'.format(
-                metric_name, CFG_PATH)
+                metric_name, CFG_FPATH)
             metric['flow_immediate'] = metric.get('flow_immediate',
                 DFLT_FLOW_IMMEDIATE)
             metric['flow_resolution'] = metric.get('flow_resolution',
