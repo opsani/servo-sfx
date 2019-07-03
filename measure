@@ -199,11 +199,12 @@ class SignalFx(Measure):
             metadata_messages = {}
             data_messages = []
 
-            # process messages in computation stream
+            # process messages in program execution/computation stream
             for msg in computation.stream():
                 if isinstance(msg, signalfx.signalflow.messages.MetadataMessage):
                     metadata_messages[msg.tsid] = msg
                 if isinstance(msg, signalfx.signalflow.messages.DataMessage):
+                    # only add messages that have datapoints in it
                     if msg.data:
                         data_messages.append(msg)
 
@@ -211,14 +212,19 @@ class SignalFx(Measure):
             inapplicable_sf_keys = ['sf_metric', 'sf_originatingMetric', 'computationId']
             inst_ret = OrderedDict()
 
+            # Go through each metadata message that represents a timeseries for requested program and define its id
             for tsid, msg in metadata_messages.items():
                 id_keys = sorted(set(msg.properties['sf_key']) - set(inapplicable_sf_keys))
                 if id_keys:
+                    # Metadata message has always have `properties` key which is an object that contains that particular timeseries meta properties.
+                    # Keys from `sf_key` meta property will always be present in metadata object `properties` of the message.
+                    # If there's no other timeseries identifying keys present in `sf_key` list, then use timeseries id which is SignalFx's internal identifier.
                     group_id = '   '.join(map(lambda key: '{}:{}'.format(key, msg.properties[key]), id_keys))
                 else:
                     group_id = tsid
                 inst_ret[tsid] = {'id': str(group_id), 'data': []}
 
+            # Populate timeseries with datapoints acquired from data messages by SignalFx timeseries id (tsid)
             for msg in data_messages:
                 for tsid, value in msg.data.items():
                     inst = inst_ret[tsid]
