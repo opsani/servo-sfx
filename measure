@@ -129,7 +129,7 @@ class SignalFx(Measure):
             qval = self._query_sfx_metric(metric['flow_program'], metric['flow_immediate'], metric['flow_resolution'],
                                           end_time, duration)
             metric_spec = {
-                'value': qval,
+                'values': qval,
                 'annotation': metric['flow_program'],
             }
             if metric.get('unit') is not None:
