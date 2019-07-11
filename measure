@@ -143,7 +143,10 @@ class SignalFx(Measure):
 
         # terminate pre_cmd_async, if any
         if hasattr(self, 'proc_async'):
-            os.killpg(os.getpgid(self.proc_async.pid), signal.SIGTERM)
+            try:
+                os.killpg(os.getpgid(self.proc_async.pid), signal.SIGTERM)
+            except Exception as e:
+                self.debug('Failed to kill async cmd', e)
 
         return measurement, annotations
 
