@@ -120,7 +120,8 @@ class SignalFx(Measure):
 
         # execute pre_cmd_async, if any
         if self.cfg['pre_cmd_async'] is not None:
-            self.proc_async = self._run_command_async(self.cfg['pre_cmd_async'])
+            cmd = self.cfg['pre_cmd_async'].format(**control.get('userdata', {}))
+            self.proc_async = self._run_command_async(cmd)
 
         # execute pre_cmd, if any
         if self.cfg['pre_cmd'] is not None:
