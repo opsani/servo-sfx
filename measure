@@ -22,10 +22,6 @@ sfx:
             flow_program:    <val>     # REQUIRED:  SignalFlow program to query metrics
             flow_immediate:  <val>     # optional:  boolean, default False
             flow_resolution: <val>     # optional:  integer ms, default None
-            time_aggr:       <val>     # optional:  aggr method for space aggregates
-                                       #            default 'avg'
-            space_aggr:      <val>     # optional:  aggr method for values at a
-                                       #            given time; default 'avg'
             unit:            <val>     # optional:  unit of metric, e.g 'req/sec'
         <metric2_name>:
             flow_program:  ...
@@ -33,12 +29,13 @@ sfx:
 '''
 
 import json
-import numbers
 import os
 import signal
 import subprocess
 import sys
 import time
+from collections import OrderedDict
+
 import yaml
 
 import signalfx
@@ -53,14 +50,10 @@ CFG_FPATH            = './config.yaml'
 
 DFLT_WARMUP          = 0
 DFLT_DURATION        = 120
-DFLT_TIME_AGGR       = 'avg'
-DFLT_SPACE_AGGR      = 'avg'
 DFLT_STREAM_ENDPOINT = 'https://stream.signalfx.com'
 DFLT_FLOW_IMMEDIATE  = False
 DFLT_FLOW_RESOLUTION = None
-DFLT_NODATA_PCT_OK   = 0.0
 
-AGGR_OPERATORS       = ('avg', 'max', 'min', 'sum')
 API_KEY_FPATH        = '/etc/optune-sfx-auth/api_key'
 API_KEY_ENV_VAR      = 'OPTUNE_SFX_API_KEY'
 
@@ -93,7 +86,6 @@ class SignalFx(Measure):
 
     # overwrites super
     def measure(self):
-
         # parse and valcheck:  control configuration
         assert 'control' in self.input_data, 'Input data missing control configuration'
         control  = self.input_data['control']
@@ -101,7 +93,6 @@ class SignalFx(Measure):
         duration = int(control.get('duration', DFLT_DURATION))
         assert warmup >= 0 and duration >= 0, \
             'Both warmup {} and duration {} must be non-negative'.format(warmup, duration)
-        nodata_pct_ok = control.get('userdata',{}).get('nodata_pct_ok', DFLT_NODATA_PCT_OK)
         self.t_sleep = warmup + duration
 
         # parse and valcheck:  driver config
@@ -111,10 +102,8 @@ class SignalFx(Measure):
         self._init_sfx()
         end_time = time.time()
         for metric_name, metric in self.cfg['metrics'].items():
-            qval = self._query_sfx_metric(metric['flow_program'],
-                metric['flow_immediate'], metric['flow_resolution'],
-                metric['time_aggr'], metric['space_aggr'], end_time,
-                duration, nodata_pct_ok)
+            qval = self._query_sfx_metric(metric['flow_program'], metric['flow_immediate'], metric['flow_resolution'],
+                                          end_time, duration)
             self._nfy('Initial value for query {}:  {}'.format(
                 metric['flow_program'], qval))
 
@@ -138,12 +127,10 @@ class SignalFx(Measure):
         annotations = {}
         end_time = time.time()
         for metric_name, metric in self.cfg['metrics'].items():
-            qval = self._query_sfx_metric(metric['flow_program'],
-                metric['flow_immediate'], metric['flow_resolution'],
-                metric['time_aggr'], metric['space_aggr'], end_time,
-                duration, nodata_pct_ok)
+            qval = self._query_sfx_metric(metric['flow_program'], metric['flow_immediate'], metric['flow_resolution'],
+                                          end_time, duration)
             metric_spec = {
-                'value': qval,
+                'values': qval,
                 'annotation': metric['flow_program'],
             }
             if metric.get('unit') is not None:
@@ -157,7 +144,10 @@ class SignalFx(Measure):
 
         # terminate pre_cmd_async, if any
         if hasattr(self, 'proc_async'):
-            os.killpg(os.getpgid(self.proc_async.pid), signal.SIGTERM)
+            try:
+                os.killpg(os.getpgid(self.proc_async.pid), signal.SIGTERM)
+            except Exception as e:
+                self.debug('Failed to kill async cmd', e)
 
         return measurement, annotations
 
@@ -168,7 +158,6 @@ class SignalFx(Measure):
             msg_index=None,
             stage=None,
             stageprogress=None):
-
         # update progress based on how much time has elapsed
         if hasattr(self, 't_sleep'):
             t_taken = time.time() - self.t_measure_start
@@ -177,7 +166,6 @@ class SignalFx(Measure):
 
     # helper:  initialize sfx api module
     def _init_sfx(self):
-
         # as required:  read sfx_api_key from file (e.g., from k8s secret volume
         # mounted file) or from env variable
         if not hasattr(self, 'sfx_api_key'):
@@ -198,16 +186,9 @@ class SignalFx(Measure):
             raise Exception(
                 'Failed to initialize SignalFx API module. Error: {}'.format(str(e)))
 
-    # helper:  query sfx metrics over last duration seconds and return
-    # value computed from aggregating in time and space
-    def _query_sfx_metric(self, program, immediate, resolution, time_aggr,
-        space_aggr, end_time, duration, nodata_pct_ok):
-
-        n_data_msg = 0
-        n_nodata_msg = 0
-        space_aggr_vals = []
+    # helper:  query sfx metrics over last duration seconds
+    def _query_sfx_metric(self, program, immediate, resolution, end_time, duration):
         with self.sfx.signalflow(self.sfx_api_key) as flow:
-
             # execute SignalFlow program, obtaining a stream object:
             stop_ms = int(end_time) * 1000
             start_ms = stop_ms - (duration * 1000)
@@ -219,44 +200,45 @@ class SignalFx(Measure):
                     'Failed to query SignalFx for program {}. Error: {}'.format(
                     program, str(e)))
 
-            # process messages in computation stream
+            metadata_messages = {}
+            data_messages = []
+
+            # process messages in program execution/computation stream
             for msg in computation.stream():
+                if isinstance(msg, signalfx.signalflow.messages.MetadataMessage):
+                    metadata_messages[msg.tsid] = msg
                 if isinstance(msg, signalfx.signalflow.messages.DataMessage):
-                    space_vals = [x for x in list(msg.data.values()) if isinstance(
-                        x, numbers.Number)]
-                    if len(space_vals) == 0:
-                        n_nodata_msg += 1
-                    else:
-                        n_data_msg += 1
-                        space_aggr_vals.append(self._aggregate_values(space_vals,
-                            space_aggr))
+                    # only add messages that have datapoints in it
+                    if msg.data:
+                        data_messages.append(msg)
 
-        # verify percent of empty data messages is below configured threshold
-        n_msg = n_data_msg + n_nodata_msg
-        nodata_pct = 100.0 * (n_nodata_msg / n_msg)
-        self._nfy('SignalFlow stream: {} data msgs, {} nodata msgs, {:.2f}% empty for program {}'.format(
-            n_data_msg, n_nodata_msg, nodata_pct, program))
-        assert nodata_pct <= nodata_pct_ok, \
-            'SignalFlow stream:  {:.2f}% of {} data msgs are empty ({:.2f}% is ok) for program {}'.format(
-            nodata_pct, n_msg, nodata_pct_ok, program)
-        assert len(space_aggr_vals) > 0, \
-            'SignalFx query for program {} returned no time series metrics data'.format(
-            program)
+            # Read more about 'sf_key' at https://developers.signalfx.com/signalflow_analytics/rest_api_messages/stream_messages_specification.html#_metadata_messages
+            inapplicable_sf_keys = ['sf_metric', 'sf_originatingMetric', 'computationId']
+            inst_ret = OrderedDict()
 
-        # aggregate in time and return value
-        return self._aggregate_values(space_aggr_vals, time_aggr)
+            # Go through each metadata message that represents a timeseries for requested program and define its id
+            for tsid, msg in metadata_messages.items():
+                id_keys = sorted(set(msg.properties['sf_key']) - set(inapplicable_sf_keys))
+                if id_keys:
+                    # Group id represents an identification for a particular timeseries set of a particular metric
+                    # Metadata message will always have `properties` key, which is an object that contains particular timeseries meta properties.
+                    # Keys from `sf_key` meta property will always be present in metadata object `properties` of the message.
+                    # If there's no other timeseries identifying keys present in `sf_key` list, then use timeseries id which is SignalFx's internal identifier.
+                    # To have actual instance id as an identifier provide grouping within particular metric's program based on the metric property that represents instance id.
+                    group_id = '   '.join(map(lambda key: '{}:{}'.format(key, msg.properties[key]), id_keys))
+                else:
+                    group_id = tsid
+                inst_ret[tsid] = {'data': [], 'id': str(group_id)}
 
-    # helper:  return an aggregate value computed from an input list of values
-    def _aggregate_values(self, vals, aggr):
-        if aggr == 'avg':
-            return sum(vals) / float(len(vals))
-        if aggr == 'max':
-            return max(vals)
-        if aggr == 'min':
-            return min(vals)
-        if aggr == 'sum':
-            return sum(vals)
-        raise Exception('Unexpected aggregation method {}'.format(aggr))
+            # Populate resulting timeseries with datapoints acquired from incoming data messages using SignalFx timeseries id (tsid) that we got from incoming metadata messages.
+            # Expected resulting data structure to be sent to the backend: [{"data": [[timestamp, value], …], "id": group_id}, …]
+            for msg in data_messages:
+                for tsid, value in msg.data.items():
+                    inst = inst_ret[tsid]
+                    datapoint = [msg.logical_timestamp_ms, value]
+                    inst['data'].append(datapoint)
+
+        return list(inst_ret.values())
 
     # helper:  run a Bash shell command and raise an Exception on failure
     # note:  if cmd is a string, this supports shell pipes, environment variable
@@ -307,23 +289,15 @@ class SignalFx(Measure):
         # parse descriptor:  metrics
         metrics = sfx.get('metrics',{})
         assert isinstance(metrics, dict) and len(metrics) > 0, \
-            'No metrics config in {}'.format(CFG_PATH)
+            'No metrics config in {}'.format(CFG_FPATH)
         for metric_name, metric in metrics.items():
             assert 'flow_program' in metric, \
                 'No flow_program configured for metric {} in {}'.format(
-                metric_name, CFG_PATH)
+                metric_name, CFG_FPATH)
             metric['flow_immediate'] = metric.get('flow_immediate',
                 DFLT_FLOW_IMMEDIATE)
             metric['flow_resolution'] = metric.get('flow_resolution',
                 DFLT_FLOW_RESOLUTION)
-            metric['time_aggr'] = metric.get('time_aggr', DFLT_TIME_AGGR)
-            metric['space_aggr'] = metric.get('space_aggr', DFLT_SPACE_AGGR)
-            assert metric['time_aggr'] in AGGR_OPERATORS, \
-                'Unknown time_aggr {} for metric {} in {}'.format(
-                metric['time_aggr'], metric_name, CFG_PATH)
-            assert metric['space_aggr'] in AGGR_OPERATORS, \
-                'Unknown space_aggr {} for metric {} in {}'.format(
-                metric['space_aggr'], metric_name, CFG_PATH)
         self.cfg['metrics'] = metrics
 
     # helper:  print a msg to servo stderr (debug log) and log to the Optune
